@@ -1305,13 +1305,18 @@ proc ETHExecutionBlockHeaderCreateFromJson(
     doAssert data.withdrawalsRoot.isSome  # Checked above
 
     wds = newSeqOfCap[ETHWithdrawal](data.withdrawals.get.len)
-    for wd in data.withdrawals.get:
+    for data in data.withdrawals.get:
       # Check fork consistency
-      static: doAssert totalSerializedFields(eth_types.EthWithdrawal) == 4,
+      static: doAssert totalSerializedFields(WithdrawalObject) == 4,
         "Only update this number once code is adjusted to check new fields!"
 
       # Construct withdrawal
       let
+        wd = eth_types.EthWithdrawal(
+          index: distinctBase(data.index),
+          validatorIndex: distinctBase(data.validatorIndex),
+          address: distinctBase(data.address).to(EthAddress),
+          amount: distinctBase(data.amount))
         rlpBytes =
           try:
             rlp.encode(wd)
@@ -1557,7 +1562,7 @@ proc ETHTransactionsCreateFromJson(
     if data.authorizationList.isSome:
       for authorization in data.authorizationList.get:
         static: doAssert sizeof(uint64) == sizeof(authorization.chainId)
-        if authorization.v > uint8.high:
+        if distinctBase(authorization.v) > uint8.high:
           return nil
     let
       tx = eth_types.EthTransaction(
@@ -1578,7 +1583,9 @@ proc ETHTransactionsCreateFromJson(
         payload: data.input,
         accessList:
           if data.accessList.isSome:
-            data.accessList.get
+            data.accessList.get.mapIt(AccessPair(
+              address: distinctBase(it.address).to(EthAddress),
+              storageKeys: it.storageKeys.mapIt(distinctBase(it).to(Bytes32))))
           else:
             @[],
         maxFeePerBlobGas:
@@ -1591,7 +1598,13 @@ proc ETHTransactionsCreateFromJson(
             @[],
         authorizationList:
           if data.authorizationList.isSome:
-            data.authorizationList.get
+            data.authorizationList.get.mapIt(Authorization(
+              chainId: it.chainId.ChainId,
+              address: distinctBase(it.address).to(EthAddress),
+              nonce: distinctBase(it.nonce),
+              v: distinctBase(it.v),
+              r: it.r,
+              s: it.s))
           else:
             @[],
         V: distinctBase(data.v),
@@ -1602,7 +1615,7 @@ proc ETHTransactionsCreateFromJson(
           rlp.encode(tx)
         except RlpError:
           raiseAssert "Unreachable"
-      hash = keccak256(rlpBytes)
+      hash = keccakHash(rlpBytes)
     if data.hash.asEth2Digest != hash:
       return nil
 
@@ -1651,7 +1664,7 @@ proc ETHTransactionsCreateFromJson(
         of DestinationType.Regular:
           tx.to.get
         of DestinationType.Create:
-          let hash = keccak256(rlp.encodeList(fromAddress, tx.nonce))
+          let hash = keccakHash(rlp.encodeList(fromAddress, tx.nonce))
           hash.to(EthAddress)
 
     # Compute authorizations
@@ -1670,7 +1683,7 @@ proc ETHTransactionsCreateFromJson(
         signature: @sig)
 
     txs.add ETHTransaction(
-      hash: keccak256(rlpBytes),
+      hash: keccakHash(rlpBytes),
       chainId: distinctBase(tx.chainId),
       `from`: ExecutionAddress(data: fromAddress),
       nonce: tx.nonce,
